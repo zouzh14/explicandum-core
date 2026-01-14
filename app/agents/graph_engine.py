@@ -33,17 +33,26 @@ if settings.DEEPSEEK_API_KEY:
         api_key=settings.DEEPSEEK_API_KEY,
         base_url="https://api.deepseek.com",
     )
+    philosophy_model = ChatOpenAI(
+        model="deepseek-chat",
+        api_key=settings.DEEPSEEK_API_KEY,
+        base_url="https://api.deepseek.com",
+    )
+    stance_model = ChatOpenAI(
+        model="deepseek-chat",
+        api_key=settings.DEEPSEEK_API_KEY,
+        base_url="https://api.deepseek.com",
+    )
 else:
     logic_model = ChatGoogleGenerativeAI(
         model="gemini-3-flash-preview", google_api_key=settings.GEMINI_API_KEY
     )
-
-philosophy_model = ChatGoogleGenerativeAI(
-    model="gemini-3-flash-preview", google_api_key=settings.GEMINI_API_KEY
-)
-stance_model = ChatGoogleGenerativeAI(
-    model="gemini-3-flash-preview", google_api_key=settings.GEMINI_API_KEY
-)
+    philosophy_model = ChatGoogleGenerativeAI(
+        model="gemini-3-flash-preview", google_api_key=settings.GEMINI_API_KEY
+    )
+    stance_model = ChatGoogleGenerativeAI(
+        model="gemini-3-flash-preview", google_api_key=settings.GEMINI_API_KEY
+    )
 
 
 # Nodes
