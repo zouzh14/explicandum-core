@@ -49,3 +49,14 @@ class ChatRequest(BaseModel):
     personalContext: List[str] = []
     retrievedChunks: List[VectorChunk] = []
     sessionHistory: List[Message] = []
+
+
+class SendCodeRequest(BaseModel):
+    email: str
+
+
+class VerifyRegisterRequest(BaseModel):
+    email: str
+    code: str
+    username: str
+    password: str
