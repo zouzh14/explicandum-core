@@ -45,6 +45,7 @@ class Message(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    threadId: Optional[str] = "default"
     personalContext: List[str] = []
     retrievedChunks: List[VectorChunk] = []
     sessionHistory: List[Message] = []
