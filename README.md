@@ -36,13 +36,14 @@ Explicandum Core follows a modular agentic design:
 
 2.  **Create a virtual environment:**
     ```bash
-    python3 -m venv venv
-    source venv/bin/activate
+    uv venv --python 3.12
+
+    source .venv/bin/activate
     ```
 
 3.  **Install dependencies:**
     ```bash
-    pip install -r requirements.txt
+    uv pip install -r requirements.txt
     ```
 
 4.  **Configuration:**
