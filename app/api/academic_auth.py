@@ -1,0 +1,385 @@
+"""
+学术身份验证和地区限制API
+"""
+
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
+from typing import List, Optional
+from datetime import datetime, timedelta
+import uuid
+
+from app.database import models, base
+from app.schema.models import (
+    InvitationCodeCreate,
+    InvitationCodeResponse,
+    IPRegionCheck,
+    RegistrationRestrictionCheck,
+    InvitationRegistrationRequest,
+    AccessLogResponse,
+)
+from app.services.geoip_service import geoip_service
+from app.core import auth
+from app.core.auth import get_current_user, oauth2_scheme
+
+security = HTTPBearer()
+from app.core.config import settings
+import logging
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/academic-auth", tags=["academic-auth"])
+
+
+def get_client_ip_info(request: Request) -> tuple[str, bool, str]:
+    """获取客户端IP信息"""
+    ip_address = geoip_service.get_client_ip(request)
+    is_china_region, region = geoip_service.is_china_ip(ip_address)
+    return ip_address, is_china_region, region
+
+
+def log_access_attempt(
+    db: Session,
+    user_id: Optional[str],
+    ip_address: str,
+    region: str,
+    action: str,
+    success: bool,
+    error_message: Optional[str] = None,
+    user_agent: Optional[str] = None,
+):
+    """记录访问日志"""
+    access_log = models.AccessLog(
+        user_id=user_id,
+        ip_address=ip_address,
+        region=region,
+        action=action,
+        user_agent=user_agent,
+        success=success,
+        error_message=error_message,
+    )
+    db.add(access_log)
+    db.commit()
+
+
+@router.get("/check-ip-region")
+async def check_ip_region(request: Request) -> IPRegionCheck:
+    """检查IP地区"""
+    ip_address, is_china_region, region = get_client_ip_info(request)
+
+    # 获取国家代码
+    country_code = None
+    try:
+        _, country_code = geoip_service._check_with_online_api(ip_address)
+    except Exception as e:
+        logger.error(f"获取国家代码失败: {e}")
+
+    return IPRegionCheck(
+        ip_address=ip_address,
+        is_china_region=is_china_region,
+        region=region,
+        country_code=country_code,
+    )
+
+
+@router.get("/check-registration-restrictions")
+async def check_registration_restrictions(
+    request: Request,
+) -> RegistrationRestrictionCheck:
+    """检查注册限制"""
+    ip_address, is_china_region, region = get_client_ip_info(request)
+
+    # 中国大陆、港澳台地区的限制
+    if is_china_region:
+        allows_guest = False
+        requires_academic_verification = True
+        message = "由于合规要求，中国大陆、港澳台地区用户需要通过学术身份验证后才能注册。请提交学术身份申请。"
+    else:
+        allows_guest = True
+        requires_academic_verification = False
+        message = None
+
+    return RegistrationRestrictionCheck(
+        is_china_region=is_china_region,
+        region=region,
+        allows_guest=allows_guest,
+        requires_academic_verification=requires_academic_verification,
+        message=message,
+    )
+
+
+@router.post("/create-invitation-code")
+async def create_invitation_code(
+    invitation: InvitationCodeCreate,
+    admin_user: models.User = Depends(get_current_user),
+    db: Session = Depends(base.get_db),
+):
+    """创建邀请码（管理员）"""
+    # 检查用户是否为管理员
+    if admin_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required"
+        )
+
+    # 检查邀请码是否已存在
+    existing = (
+        db.query(models.InvitationCode)
+        .filter(models.InvitationCode.code == invitation.code)
+        .first()
+    )
+
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="邀请码已存在",
+        )
+
+    invitation_id = f"inv_{uuid.uuid4().hex[:8]}"
+    db_invitation = models.InvitationCode(
+        id=invitation_id,
+        code=invitation.code,
+        created_by=admin_user.id,
+        max_uses=invitation.max_uses,
+        allows_guest=invitation.allows_guest,
+        requires_verification=invitation.requires_verification,
+        expires_at=invitation.expires_at,
+    )
+
+    db.add(db_invitation)
+    db.commit()
+    db.refresh(db_invitation)
+
+    return InvitationCodeResponse.model_validate(db_invitation)
+
+
+@router.get("/invitation-codes")
+async def get_invitation_codes(
+    admin_user: models.User = Depends(get_current_user),
+    db: Session = Depends(base.get_db),
+):
+    """获取邀请码列表（管理员）"""
+    # 检查用户是否为管理员
+    if admin_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required"
+        )
+
+    invitations = (
+        db.query(models.InvitationCode)
+        .order_by(models.InvitationCode.created_at.desc())
+        .all()
+    )
+
+    return [InvitationCodeResponse.model_validate(inv) for inv in invitations]
+
+
+@router.post("/register-with-invitation")
+async def register_with_invitation(
+    registration: InvitationRegistrationRequest,
+    request: Request,
+    db: Session = Depends(base.get_db),
+):
+    """使用邀请码注册"""
+    ip_address, is_china_region, region = get_client_ip_info(request)
+
+    # 验证邀请码
+    invitation = (
+        db.query(models.InvitationCode)
+        .filter(models.InvitationCode.code == registration.invitation_code)
+        .first()
+    )
+
+    if not invitation:
+        log_access_attempt(
+            db,
+            None,
+            ip_address,
+            region,
+            "invitation_register_invalid_code",
+            False,
+            "邀请码无效",
+            request.headers.get("User-Agent"),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="邀请码无效",
+        )
+
+    # 检查邀请码是否已用完
+    if invitation.used_count >= invitation.max_uses:
+        log_access_attempt(
+            db,
+            None,
+            ip_address,
+            region,
+            "invitation_register_exhausted",
+            False,
+            "邀请码已用完",
+            request.headers.get("User-Agent"),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="邀请码已用完",
+        )
+
+    # 检查邀请码是否过期
+    if invitation.expires_at and invitation.expires_at < datetime.utcnow():
+        log_access_attempt(
+            db,
+            None,
+            ip_address,
+            region,
+            "invitation_register_expired",
+            False,
+            "邀请码已过期",
+            request.headers.get("User-Agent"),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="邀请码已过期",
+        )
+
+    # 检查用户名是否已存在
+    existing_user = (
+        db.query(models.User)
+        .filter(models.User.username == registration.username)
+        .first()
+    )
+
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="用户名已存在",
+        )
+
+    # 如果提供了邮箱，检查邮箱是否已存在
+    if registration.email:
+        existing_email = (
+            db.query(models.User)
+            .filter(models.User.email == registration.email)
+            .first()
+        )
+
+        if existing_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="邮箱已注册",
+            )
+
+    # 创建用户
+    user_id = f"usr_{uuid.uuid4().hex[:8]}"
+    db_user = models.User(
+        id=user_id,
+        username=registration.username,
+        email=registration.email,
+        hashed_password=auth.get_password_hash(registration.password),
+        role="user",
+        token_quota=200000,  # 邀请注册用户配额
+        registration_ip=ip_address,
+    )
+
+    db.add(db_user)
+
+    # 更新邀请码使用状态
+    invitation.used_count += 1
+    invitation.used_by = user_id
+    invitation.used_at = datetime.utcnow()
+    if invitation.used_count >= invitation.max_uses:
+        invitation.is_used = True
+
+    db.commit()
+
+    # 记录成功日志
+    log_access_attempt(
+        db,
+        user_id,
+        ip_address,
+        region,
+        "invitation_register_success",
+        True,
+        None,
+        request.headers.get("User-Agent"),
+    )
+
+    # 创建访问令牌
+    access_token = auth.create_access_token(data={"sub": db_user.username})
+
+    return {
+        "status": "success",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": db_user.id,
+            "username": db_user.username,
+            "email": db_user.email,
+            "role": db_user.role,
+            "tokenQuota": db_user.token_quota,
+            "tokensUsed": db_user.tokens_used,
+            "requestCount": db_user.request_count,
+            "lastRequestAt": int(db_user.last_request_at.timestamp() * 1000)
+            if db_user.last_request_at
+            else None,
+            "createdAt": int(db_user.created_at.timestamp() * 1000),
+            "registrationIp": db_user.registration_ip,
+            "isTemp": db_user.is_temp,
+            "expiresAt": int(db_user.expires_at.timestamp() * 1000)
+            if db_user.expires_at
+            else None,
+        },
+    }
+
+
+@router.delete("/invitation-codes/{invitation_id}")
+async def delete_invitation_code(
+    invitation_id: str,
+    admin_user: models.User = Depends(get_current_user),
+    db: Session = Depends(base.get_db),
+):
+    """删除邀请码（管理员）"""
+    # 检查用户是否为管理员
+    if admin_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required"
+        )
+
+    # 查找邀请码
+    invitation = (
+        db.query(models.InvitationCode)
+        .filter(models.InvitationCode.id == invitation_id)
+        .first()
+    )
+
+    if not invitation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Invitation code not found"
+        )
+
+    # 删除邀请码
+    db.delete(invitation)
+    db.commit()
+
+    return {"message": "Invitation code deleted successfully"}
+
+
+@router.get("/access-logs")
+async def get_access_logs(
+    limit: int = 100,
+    offset: int = 0,
+    admin_user: models.User = Depends(get_current_user),
+    db: Session = Depends(base.get_db),
+):
+    """获取访问日志（管理员）"""
+    # 检查用户是否为管理员
+    if admin_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required"
+        )
+
+    logs = (
+        db.query(models.AccessLog)
+        .order_by(models.AccessLog.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    return [AccessLogResponse.model_validate(log) for log in logs]

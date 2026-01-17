@@ -12,10 +12,41 @@ from pydantic import BaseModel
 import logging
 
 from app.database.base import get_db
-from app.core.auth import get_current_admin_user
+from app.database.models import User
 from app.monitoring.risk_detector import RiskDetector, RiskLevel, RiskType
 from app.monitoring.alert_manager import alert_manager
 from app.services.email_service import email_service
+from fastapi.security import OAuth2PasswordBearer
+from app.core.auth import decode_access_token
+from fastapi import HTTPException, status
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+
+
+async def get_current_admin_user(
+    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
+):
+    """获取当前管理员用户"""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    payload = decode_access_token(token)
+    if payload is None:
+        raise credentials_exception
+    username: str = payload.get("sub")
+    if username is None:
+        raise credentials_exception
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        raise credentials_exception
+    if user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required"
+        )
+    return user
+
 
 logger = logging.getLogger(__name__)
 

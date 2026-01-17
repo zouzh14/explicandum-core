@@ -144,14 +144,31 @@ async def stream_explicandum_response(
 
         config = {"configurable": {"thread_id": thread_id}}
 
-        # Invoke the graph with the thread_id config for persistence
-        result = await app_graph.ainvoke(inputs, config=config)
-    final_text = result["final_response"]
+        # 使用astream来实时获取每个节点的输出
+        async for chunk in app_graph.astream(inputs, config=config):
+            # 当logic_analyst节点完成时，输出其结果
+            if "logic_analyst" in chunk and "logic_analysis" in chunk["logic_analyst"]:
+                logic_text = chunk["logic_analyst"]["logic_analysis"]
+                yield f"<logic_thinking>{logic_text}</logic_thinking>\n\n"
 
-    # Simulate streaming for the frontend
-    chunk_size = 20
-    for i in range(0, len(final_text), chunk_size):
-        yield final_text[i : i + chunk_size]
+            # 当philosophy_expert节点完成时，输出其结果
+            if (
+                "philosophy_expert" in chunk
+                and "philosophy_analysis" in chunk["philosophy_expert"]
+            ):
+                philosophy_text = chunk["philosophy_expert"]["philosophy_analysis"]
+                yield f"<philosophy_thinking>{philosophy_text}</philosophy_thinking>\n\n"
+
+            # 当consolidator节点完成时，输出最终结果
+            if "consolidator" in chunk and "final_response" in chunk["consolidator"]:
+                final_text = chunk["consolidator"]["final_response"]
+                # 提取Final Answer部分
+                if "Final Answer:" in final_text:
+                    final_answer = final_text.split("Final Answer:")[-1].strip()
+                    yield f"Final Answer: {final_answer}"
+                else:
+                    yield final_text
+                break  # 结束流式输出
 
 
 async def extract_philosophical_stance(message: str) -> str:

@@ -23,6 +23,8 @@ from app.agents.graph_engine import (
 from app.database import models, base
 from app.core import auth
 from app.api.monitoring import router as monitoring_router
+from app.api.academic_auth import router as academic_auth_router
+from app.api.user_management import router as user_management_router
 from app.services.email_service import email_service
 import json
 import random
@@ -99,25 +101,8 @@ async def integrity_error_handler(request: Request, exc: IntegrityError):
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
-
-async def get_current_user(
-    token: str = Depends(oauth2_scheme), db: Session = Depends(base.get_db)
-):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    payload = auth.decode_access_token(token)
-    if payload is None:
-        raise credentials_exception
-    username: str = payload.get("sub")
-    if username is None:
-        raise credentials_exception
-    user = db.query(models.User).filter(models.User.username == username).first()
-    if user is None:
-        raise credentials_exception
-    return user
+# Import get_current_user from auth module
+from app.core.auth import get_current_user
 
 
 # Initialize Resend (removed - now handled by unified email service)
@@ -161,6 +146,10 @@ app.add_middleware(
 
 # Include monitoring router
 app.include_router(monitoring_router, tags=["monitoring"])
+# Include academic auth router (IP检查、注册限制检查、邀请码管理和用户注册)
+app.include_router(academic_auth_router, tags=["academic-auth"])
+# Include user management router
+app.include_router(user_management_router, tags=["user-management"])
 
 
 @app.post("/chat")
@@ -292,9 +281,48 @@ async def login(request: LoginRequest, db: Session = Depends(base.get_db)):
 
 @app.post("/auth/verify-register")
 async def verify_register(
-    request: VerifyRegisterRequest, db: Session = Depends(base.get_db)
+    request: VerifyRegisterRequest,
+    request_obj: Request,
+    db: Session = Depends(base.get_db),
 ):
     email = request.email
+
+    # Check IP region for compliance
+    from app.services.geoip_service import geoip_service
+
+    ip_address = geoip_service.get_client_ip(request_obj)
+    is_china_region, region = geoip_service.is_china_ip(ip_address)
+
+    # For China region users, enforce academic verification
+    if is_china_region:
+        is_edu = is_academic(email)
+        if not is_edu:
+            # Log access attempt for compliance
+            try:
+                access_log = models.AccessLog(
+                    user_id=None,
+                    ip_address=ip_address,
+                    region=region,
+                    action="register_denied_non_academic",
+                    user_agent=request_obj.headers.get("User-Agent"),
+                    success=False,
+                    error_message=f"Non-academic email ({email}) from China region",
+                )
+                db.add(access_log)
+                db.commit()
+            except Exception:
+                pass  # Log failure shouldn't block the response
+
+            return {
+                "status": "error",
+                "message": "academic_only_registration",
+                "detail": {
+                    "en": "I sincerely apologize, but this platform is currently dedicated exclusively to academic research and educational purposes. Registration is restricted to verified academic and institutional researchers. If you are affiliated with an academic institution, please use your institutional email address for registration.",
+                    "zh": "非常抱歉，本平台目前专门服务于学术研究和教育目的。注册仅限于经过验证的学术机构和研究人员。如果您隶属于学术机构，请使用您的机构邮箱进行注册。",
+                },
+                "region": region,
+                "requires_academic": True,
+            }
 
     # Find the latest valid verification code for this email
     db_code = (
@@ -342,15 +370,44 @@ async def verify_register(
         hashed_password=auth.get_password_hash(request.password),
         role=role,
         token_quota=quota,
-        registration_ip="unknown",  # Could be improved by getting from request
+        registration_ip=ip_address,
     )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
 
+    # Record user region information
+    try:
+        user_region = models.UserRegion(
+            user_id=user_id,
+            ip_address=ip_address,
+            region=region,
+            country_code=None,  # Could be enhanced with country code detection
+            is_china_region=is_china_region,
+        )
+        db.add(user_region)
+        db.commit()
+    except Exception:
+        pass  # Region logging failure shouldn't block registration
+
     # Mark verification code as used
     db_code.is_used = True
     db.commit()
+
+    # Log successful registration
+    try:
+        access_log = models.AccessLog(
+            user_id=user_id,
+            ip_address=ip_address,
+            region=region,
+            action="register_success",
+            user_agent=request_obj.headers.get("User-Agent"),
+            success=True,
+        )
+        db.add(access_log)
+        db.commit()
+    except Exception:
+        pass  # Log failure shouldn't block the response
 
     access_token = auth.create_access_token(data={"sub": db_user.username})
 
@@ -404,8 +461,46 @@ async def test_email_endpoint():
 
 
 @app.post("/auth/create-temp")
-async def create_temp_user(request: TempUserCreate, db: Session = Depends(base.get_db)):
+async def create_temp_user(
+    request: TempUserCreate, request_obj: Request, db: Session = Depends(base.get_db)
+):
     """创建临时用户"""
+    # Check IP region for compliance
+    from app.services.geoip_service import geoip_service
+
+    ip_address = geoip_service.get_client_ip(request_obj)
+    is_china_region, region = geoip_service.is_china_ip(ip_address)
+
+    # For China region users, block guest access entirely
+    if is_china_region:
+        # Log access attempt for compliance
+        try:
+            access_log = models.AccessLog(
+                user_id=None,
+                ip_address=ip_address,
+                region=region,
+                action="guest_access_denied",
+                user_agent=request_obj.headers.get("User-Agent"),
+                success=False,
+                error_message="Guest access blocked for China region",
+            )
+            db.add(access_log)
+            db.commit()
+        except Exception:
+            pass  # Log failure shouldn't block the response
+
+        return {
+            "status": "error",
+            "message": "academic_only_registration",
+            "detail": {
+                "en": "I sincerely apologize, but this platform is currently dedicated exclusively to academic research and educational purposes. Guest access is not available. If you are affiliated with an academic institution, please use your institutional email address for full registration access.",
+                "zh": "非常抱歉，本平台目前专门服务于学术研究和教育目的。目前暂不提供访客访问权限。如果您隶属于学术机构，请使用您的机构邮箱进行完整注册以获得访问权限。",
+            },
+            "region": region,
+            "requires_academic": True,
+            "guest_blocked": True,
+        }
+
     # 生成唯一的临时用户名
     temp_id = f"temp_{uuid.uuid4().hex[:8]}"
     username = f"Guest_{temp_id[-4:]}"
@@ -425,11 +520,40 @@ async def create_temp_user(request: TempUserCreate, db: Session = Depends(base.g
         expires_at=datetime.now() + timedelta(days=30),  # 30天后过期
         upgrade_token=uuid.uuid4().hex[:16],  # 生成升级token
         token_quota=20000,  # 临时用户配额20,000 tokens
-        registration_ip=request.registration_ip or "unknown",
+        registration_ip=ip_address,
     )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+
+    # Record user region information
+    try:
+        user_region = models.UserRegion(
+            user_id=user_id,
+            ip_address=ip_address,
+            region=region,
+            country_code=None,  # Could be enhanced with country code detection
+            is_china_region=is_china_region,
+        )
+        db.add(user_region)
+        db.commit()
+    except Exception:
+        pass  # Region logging failure shouldn't block registration
+
+    # Log successful guest access
+    try:
+        access_log = models.AccessLog(
+            user_id=user_id,
+            ip_address=ip_address,
+            region=region,
+            action="guest_access_success",
+            user_agent=request_obj.headers.get("User-Agent"),
+            success=True,
+        )
+        db.add(access_log)
+        db.commit()
+    except Exception:
+        pass  # Log failure shouldn't block the response
 
     access_token = auth.create_access_token(data={"sub": db_user.username})
 

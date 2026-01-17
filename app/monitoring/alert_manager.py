@@ -9,36 +9,12 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import Column, String, DateTime, Boolean, Text, Float, Integer
 
 from .risk_detector import RiskEvent, RiskLevel, RiskType
 from app.services.email_service import email_service
-from app.database.base import Base
+from app.database.models import RiskEventRecord
 
 logger = logging.getLogger(__name__)
-
-
-# Risk event database model
-class RiskEventRecord(Base):
-    """Database model for storing risk events"""
-
-    __tablename__ = "risk_events"
-
-    id = Column(String, primary_key=True)
-    type = Column(String, nullable=False)
-    level = Column(String, nullable=False)
-    title = Column(String, nullable=False)
-    description = Column(Text, nullable=False)
-    value = Column(Float, nullable=False)
-    threshold = Column(Float, nullable=False)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
-    resolved = Column(Boolean, default=False)
-    resolved_at = Column(DateTime, nullable=True)
-    resolved_by = Column(String, nullable=True)
-    actions = Column(Text, nullable=True)  # JSON string
-    event_metadata = Column(Text, nullable=True)  # JSON string
-    email_sent = Column(Boolean, default=False)
-    email_sent_at = Column(DateTime, nullable=True)
 
 
 class AlertManager:

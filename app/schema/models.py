@@ -162,3 +162,82 @@ class VectorSearchRequest(BaseModel):
 class QuotaCheckResponse(BaseModel):
     allowed: bool
     reason: Optional[str] = None
+
+
+# 学术身份验证相关类型
+# 注意：学术申请相关模型已被移除，系统现在只有用户注册一层
+
+
+class InvitationCodeBase(BaseModel):
+    code: str
+    max_uses: int = 1
+    allows_guest: bool = False
+    requires_verification: bool = True
+    expires_at: Optional[datetime] = None
+
+
+class InvitationCodeCreate(InvitationCodeBase):
+    pass
+
+
+class InvitationCodeResponse(InvitationCodeBase):
+    id: str
+    created_by: str
+    used_by: Optional[str] = None
+    is_used: bool = False
+    used_count: int = 0
+    created_at: datetime
+    used_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class UserRegionResponse(BaseModel):
+    id: int
+    user_id: str
+    ip_address: str
+    region: str
+    country_code: Optional[str] = None
+    is_china_region: bool
+    detected_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class AccessLogResponse(BaseModel):
+    id: int
+    user_id: Optional[str] = None
+    ip_address: str
+    region: str
+    action: str
+    user_agent: Optional[str] = None
+    success: bool
+    error_message: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class IPRegionCheck(BaseModel):
+    ip_address: str
+    is_china_region: bool
+    region: str
+    country_code: Optional[str] = None
+
+
+class RegistrationRestrictionCheck(BaseModel):
+    is_china_region: bool
+    region: str
+    allows_guest: bool
+    requires_academic_verification: bool
+    message: Optional[str] = None
+
+
+# 注意：AcademicVerificationRequest 模型已被移除，系统现在只有用户注册一层
+
+
+class InvitationRegistrationRequest(BaseModel):
+    invitation_code: str
+    username: str
+    password: str
+    email: Optional[str] = None

@@ -7,10 +7,13 @@ from sqlalchemy import (
     Text,
     Float,
     DateTime,
+    Enum,
+    JSON,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .base import Base
+import enum
 
 
 class User(Base):
@@ -78,3 +81,96 @@ class VerificationCode(Base):
     expires_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
     is_used = Column(Boolean, default=False)
+
+
+class InvitationCode(Base):
+    """邀请码管理"""
+
+    __tablename__ = "invitation_codes"
+
+    id = Column(String, primary_key=True, index=True)
+    code = Column(String, unique=True, index=True, nullable=False)
+    created_by = Column(String, ForeignKey("users.id"), nullable=False)  # 创建者
+    used_by = Column(String, ForeignKey("users.id"), nullable=True)  # 使用者
+    is_used = Column(Boolean, default=False)
+    max_uses = Column(Integer, default=1)  # 最大使用次数
+    used_count = Column(Integer, default=0)  # 已使用次数
+    expires_at = Column(DateTime, nullable=True)  # 过期时间
+
+    # 权限设置
+    allows_guest = Column(Boolean, default=False)  # 是否允许guest用户
+    requires_verification = Column(Boolean, default=True)  # 是否需要验证
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    used_at = Column(DateTime, nullable=True)  # 使用时间
+
+    # 关联
+    creator = relationship(
+        "User", foreign_keys=[created_by], backref="created_invitations"
+    )
+    user = relationship("User", foreign_keys=[used_by], backref="used_invitation")
+
+
+class UserRegion(Base):
+    """用户地区记录"""
+
+    __tablename__ = "user_regions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    ip_address = Column(String, nullable=False)
+    region = Column(String, nullable=False)  # 地区
+    country_code = Column(String, nullable=True)  # 国家代码
+    is_china_region = Column(Boolean, nullable=False)  # 是否为中国地区
+    detected_at = Column(DateTime, default=datetime.utcnow)
+
+    # 关联
+    user = relationship("User", backref="region_history")
+
+
+class AccessLog(Base):
+    """访问日志"""
+
+    __tablename__ = "access_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)  # 可能未登录
+    ip_address = Column(String, nullable=False)
+    region = Column(String, nullable=False)
+    action = Column(
+        String, nullable=False
+    )  # login_attempt, register_attempt, access_denied, etc.
+    user_agent = Column(Text, nullable=True)
+    success = Column(Boolean, default=False)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # 关联
+    user = relationship("User", backref="access_logs")
+
+
+class RiskEventRecord(Base):
+    """风险事件记录"""
+
+    __tablename__ = "risk_events"
+
+    id = Column(String, primary_key=True, index=True)
+    type = Column(String, nullable=False)  # security, performance, usage, system
+    level = Column(String, nullable=False)  # critical, high, medium, low
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=False)
+    value = Column(Float, nullable=False)
+    threshold = Column(Float, nullable=False)
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    resolved = Column(Boolean, default=False)
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by = Column(String, ForeignKey("users.id"), nullable=True)
+    actions = Column(Text, nullable=True)  # JSON string
+    event_metadata = Column(Text, nullable=True)  # JSON string
+    email_sent = Column(Boolean, default=False)
+    email_sent_at = Column(DateTime, nullable=True)
+
+    # 关联
+    resolver = relationship(
+        "User", foreign_keys=[resolved_by], backref="resolved_risks"
+    )
