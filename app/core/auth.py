@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Union, Any
 from jose import jwt
 from passlib.context import CryptContext
+from fastapi import HTTPException
 from app.core.config import settings
 
 # Use pbkdf2_sha256 instead of bcrypt to avoid the 72-byte limit issue
@@ -49,3 +50,12 @@ def decode_access_token(token: str) -> Optional[dict]:
         return payload
     except Exception:
         return None
+
+
+def get_current_admin_user(current_user: Any) -> Any:
+    """
+    Dependency to get current admin user
+    """
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user

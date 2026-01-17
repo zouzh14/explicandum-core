@@ -22,9 +22,10 @@ from app.agents.graph_engine import (
 )
 from app.database import models, base
 from app.core import auth
+from app.api.monitoring import router as monitoring_router
+from app.services.email_service import email_service
 import json
 import random
-import resend
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -119,8 +120,7 @@ async def get_current_user(
     return user
 
 
-# Initialize Resend
-resend.api_key = settings.RESEND_API_KEY
+# Initialize Resend (removed - now handled by unified email service)
 
 # Database-backed verification codes
 
@@ -158,6 +158,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include monitoring router
+app.include_router(monitoring_router, tags=["monitoring"])
 
 
 @app.post("/chat")
@@ -235,36 +238,18 @@ async def send_code(request: SendCodeRequest, db: Session = Depends(base.get_db)
         }
 
     try:
-        resend.Emails.send(
-            {
-                "from": f"Explicandum System <verification@{sender_domain}>",
-                "to": email,
-                "subject": f"{code} is your Explicandum verification code",
-                "html": f"""
-                <div style="font-family: sans-serif; padding: 20px; color: #18181b;">
-                    <h2 style="color: #18181b;">Verification Code</h2>
-                    <p>Your verification code for Explicandum is:</p>
-                    <div style="background: #f4f4f5; padding: 15px; font-size: 24px; font-weight: bold; letter-spacing: 5px; text-align: center; border-radius: 10px;">
-                        {code}
-                    </div>
-                    <p style="font-size: 12px; color: #71717a; margin-top: 20px;">This code will expire in 5 minutes.</p>
-                </div>
-            """,
-            }
-        )
-        return {"status": "success", "message": "Code sent"}
+        # Use unified email service
+        result = await email_service.send_verification_code(email, code)
+
+        if result["status"] == "error":
+            # Rollback the database insertion if email sending fails
+            db.rollback()
+            return result
+
+        return result
     except Exception as e:
         # Rollback the database insertion if email sending fails
         db.rollback()
-
-        # Check if it's a Resend API error (invalid domain or API key)
-        error_msg = str(e)
-        if "domain" in error_msg.lower() or "unauthorized" in error_msg.lower():
-            return {
-                "status": "error",
-                "message": "Email service configuration error. Please contact administrator.",
-            }
-
         return {"status": "error", "message": f"Failed to send email: {str(e)}"}
 
 
@@ -396,6 +381,26 @@ async def verify_register(
         "user": user_response.model_dump(),
         "isVerified": True,
     }
+
+
+@app.post("/test-email")
+async def test_email_endpoint():
+    """Test email endpoint for debugging"""
+    try:
+        result = await email_service.send_test_email("basic")
+        return {
+            "status": "success" if result else "error",
+            "message": "Test email sent successfully"
+            if result
+            else "Failed to send test email",
+            "email_config": email_service.get_email_status(),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Error sending test email: {str(e)}",
+            "email_config": email_service.get_email_status(),
+        }
 
 
 @app.post("/auth/create-temp")

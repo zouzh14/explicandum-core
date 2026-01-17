@@ -39,6 +39,39 @@ class Settings(BaseSettings):
         default=15, description="Account lockout duration in minutes"
     )
 
+    # Security Monitoring Configuration
+    FROM_EMAIL: str = Field(
+        default="noreply@explicandum.ai", description="From email address for alerts"
+    )
+    ALERT_EMAIL: str = Field(
+        default="zouzh14@tsinghua.org.cn", description="Primary alert email address"
+    )
+    CC_EMAIL: str = Field(
+        default="zouzh14@gmail.com", description="CC email address for alerts"
+    )
+    SYSTEM_URL: str = Field(
+        default="https://explicandum.ai", description="System URL for reports"
+    )
+
+    # Redis Configuration for Celery
+    REDIS_URL: str = Field(
+        default="redis://localhost:6379", description="Redis connection URL"
+    )
+    CELERY_BROKER_URL: str = Field(
+        default="redis://localhost:6379/0", description="Celery broker URL"
+    )
+
+    # Risk Monitoring Settings
+    RISK_MONITORING_ENABLED: bool = Field(
+        default=True, description="Enable risk monitoring system"
+    )
+    RISK_DETECTION_INTERVAL: int = Field(
+        default=300, description="Risk detection interval in seconds"
+    )
+    DAILY_REPORT_TIME: str = Field(
+        default="09:00", description="Daily report time (UTC)"
+    )
+
     @validator("SECRET_KEY")
     def validate_secret_key(cls, v):
         if not v or v == "your-secret-key-for-jwt-change-it-in-prod":
